@@ -113,6 +113,8 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 			}
 		}
 
+		$constraints = $this->get_input_constraints();
+
 		$properties = [];
 		$required = [];
 
@@ -124,8 +126,26 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 				'type' => self::to_json_type($parameter, $meta['type']),
 			];
 
+			// a nullable parameter accepts null too: say so, otherwise a client
+			// that sends null dies on a PHP TypeError
+			$type = $parameter->getType();
+
+			if ($type instanceof \ReflectionNamedType && $type->allowsNull() && $type->getName() !== 'null') {
+				$property['type'] = [ $property['type'], 'null' ];
+			}
+
 			if (!empty($meta['description'])) {
 				$property['description'] = trim($meta['description']);
+			}
+
+			// what the parameter falls back to when it is left out
+			if ($parameter->isOptional()) {
+				$property['default'] = $parameter->getDefaultValue();
+			}
+
+			// what the tool enforces beyond the type: minimum, maximum, enum, …
+			foreach ($constraints[$name] ?? [] as $keyword => $value) {
+				$property[$keyword] = $value;
 			}
 
 			$properties[$name] = $property;
@@ -148,6 +168,37 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	}
 
 	/**
+	 * Get what this tool enforces about its parameters beyond their type
+	 *
+	 * JSON Schema keywords per parameter name, merged into that parameter's entry
+	 * of the inputSchema: minimum and maximum for an int, enum for a string with a
+	 * fixed set of values, pattern or maxLength for free text. A tool that clamps
+	 * or validates an argument should state it here, in terms of the same
+	 * constants its execute() uses, so the client is told the truth the tool
+	 * enforces instead of learning it from a rejected call.
+	 *
+	 * @access public
+	 * @return array $constraints Keywords per parameter name
+	 */
+	public function get_input_constraints(): array {
+		return [];
+	}
+
+	/**
+	 * Get the JSON schema the structuredContent of this tool conforms to
+	 *
+	 * The specification says a server which declares an outputSchema MUST conform
+	 * to it, and a client is allowed to reject anything else. Return null (the
+	 * default) when the tool has no structured output to describe.
+	 *
+	 * @access public
+	 * @return array|null $output_schema
+	 */
+	public function get_output_schema(): ?array {
+		return null;
+	}
+
+	/**
 	 * Combined tool definition
 	 *
 	 * @access public
@@ -155,11 +206,19 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	 */
 	public function get_definition(): array {
 
-		return [
+		$definition = [
 			'name' => $this->get_name(),
 			'description' => $this->get_description(),
 			'inputSchema' => $this->get_input_schema(),
 		];
+
+		$output_schema = $this->get_output_schema();
+
+		if ($output_schema !== null) {
+			$definition['outputSchema'] = $output_schema;
+		}
+
+		return $definition;
 	}
 
 	/**

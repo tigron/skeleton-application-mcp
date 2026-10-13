@@ -96,6 +96,58 @@ Each parameter of `execute()` becomes a property in the JSON schema. The type
 gets converted from a PHP type into a JSON one, the description comes from the
 `@param` docblock. Parameters are required unless you set a default value.
 
+A nullable parameter (`?string`) is advertised as `["string","null"]`, and an
+optional one carries its `default`: a client that takes the schema at its word
+would otherwise send a null it is told is impossible, and die on a PHP
+`TypeError`.
+
+JSON Schema describes a *type*, not what your tool accepts: an `integer` does not
+say it is a page size between 1 and 25. State that in `get_input_constraints()`
+— JSON Schema keywords per parameter name, merged into that parameter's entry of
+the schema. Keep them in step with what `execute()` really enforces, ideally by
+reading the same constants:
+
+```php
+    public function get_input_constraints(): array {
+        return [
+            'query' => [ 'maxLength' => self::MAXIMUM_QUERY_LENGTH ],
+            'limit' => [ 'minimum' => 1, 'maximum' => self::MAXIMUM_LIMIT ],
+            'sort'  => [ 'enum' => [ 'name', 'city' ] ],
+        ];
+    }
+```
+
+A key that names a parameter you do not have is ignored. Any keyword is accepted,
+so an `array` parameter can also describe its `items`.
+
+### Output schema
+
+When `execute()` returns an array, the result carries both `content[0].text`
+(the serialized JSON) and `structuredContent`. The protocol defines structured
+content as a JSON **object**, and says a server that advertises an `outputSchema`
+MUST conform to it — a strict client is allowed to throw the whole call away when
+it does not. So return an object (wrap a list in a named property) and describe it
+with `get_output_schema()`:
+
+```php
+    public function get_output_schema(): array {
+        return [
+            'type' => 'object',
+            'properties' => [
+                'customers' => [
+                    'type' => 'array',
+                    'description' => 'The matching customers',
+                    'items' => [ 'type' => 'object', 'properties' => [ /* ... */ ] ],
+                ],
+            ],
+            'required' => [ 'customers' ],
+        ];
+    }
+```
+
+`outputSchema` is advertised only for tools that implement the method: the default
+returns `null` and `tools/list` then carries no `outputSchema` at all.
+
 ## Security
 
 If you want to add authentication, you need to implement a security handler. A
