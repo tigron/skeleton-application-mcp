@@ -1,4 +1,7 @@
 <?php
+
+declare(strict_types=1);
+
 /**
  * Skeleton Core Application class for MCP
  *
@@ -8,68 +11,124 @@
  * has not authenticated. None of that is a policy an application should have to write,
  * which is why it lives here rather than in a project's subclass of this class.
  *
+ * @author Gerry Demaret <gerry@tigron.be>
  * @author Roan Buysse <roan@tigron.be>
  */
 
 namespace Skeleton\Application;
 
 class Mcp extends \Skeleton\Core\Application {
-
 	/**
 	 * Tool path
 	 *
-	 * @var string $tool_path
 	 * @access public
 	 */
-	public $tool_path = null;
+	public ?string $tool_path = null;
 
 	/**
 	 * Tool namespace
 	 *
-	 * @var string $tool_namespace
 	 * @access public
 	 */
-	public $tool_namespace = null;
+	public ?string $tool_namespace = null;
 
 	/**
 	 * Security path
 	 *
-	 * @var string $security_path
 	 * @access public
 	 */
-	public $security_path = null;
+	public ?string $security_path = null;
 
 	/**
 	 * Security namespace
 	 *
-	 * @var string $security_namespace
 	 * @access public
 	 */
-	public $security_namespace = null;
+	public ?string $security_namespace = null;
 
 	/**
-	 * Component path
+	 * Definition path
 	 *
-	 * @var string $component_path
 	 * @access public
 	 */
-	public $component_path = null;
+	public ?string $definition_path = null;
 
 	/**
-	 * Component namespace
+	 * Definition namespace
 	 *
-	 * @var string $component_namespace
 	 * @access public
 	 */
-	public $component_namespace = null;
+	public ?string $definition_namespace = null;
 
 	/**
-	 * The security handlers of this application, resolved once per request
+	 * Helper path
 	 *
-	 * @var ?array<int, \Skeleton\Application\Mcp\Security> $security_handlers
+	 * @access public
+	 */
+	public ?string $helper_path = null;
+
+	/**
+	 * Helper namespace
+	 *
+	 * @access public
+	 */
+	public ?string $helper_namespace = null;
+
+	/**
+	 * The decoded request body, as `run()` read it
+	 *
+	 * The body can only be read from the stream once, and the application is the one
+	 * that reads it — so an event that logs the request asks here rather than reading
+	 * `php://input` a second time and getting nothing.
+	 *
+	 * @access public
+	 */
+	public mixed $request = null;
+
+	/**
+	 * The JSON-RPC method this request carries, if any
+	 *
+	 * @access public
+	 */
+	public ?string $jsonrpc_method = null;
+
+	/**
+	 * The response this request was answered with, if one was sent
+	 *
+	 * The same reason as the request: the application is the only place that sees both
+	 * ends of the exchange, and an event that logs the request asks here rather than
+	 * guessing from the status line.
+	 *
+	 * @var ?array<string, mixed> $response
+	 * @access public
+	 */
+	public ?array $response = null;
+
+	/**
+	 * The security handlers of this application, one instance per class per request
+	 *
+	 * A handler that resolves who is calling pays two queries to do it. Instantiated
+	 * per tool, the same handler would ask that question once per tool of the same
+	 * request, which is how a credential check becomes the cost of a page. Keyed by
+	 * class name, in the order the classes were first seen.
+	 *
+	 * @var array<string, \Skeleton\Application\Mcp\Security> $security_instances
 	 * @access private
 	 */
-	private ?array $security_handlers = null;
+	private array $security_instances = [];
+
+	/**
+	 * The handler classes at least one tool declares
+	 *
+	 * Only these are asked whether the caller is authenticated. A class sitting in
+	 * `security/` that no tool named decides nothing: while the credential verdict was
+	 * an AND, a stray handler could only lock people out — a failure a suite notices —
+	 * and under an OR it would be an alternative way in.
+	 *
+	 * @var ?array<string, bool> $declared_security_classes
+	 * @access private
+	 */
+	private ?array $declared_security_classes = null;
 
 	/**
 	 * The tools of this application, instantiated once per request
@@ -77,11 +136,11 @@ class Mcp extends \Skeleton\Core\Application {
 	 * The listing, the lookup by name and the resolution of the declared security
 	 * handlers all want the same set, and each walk means reading and parsing the
 	 * docblock of every tool again — which is precisely the work the memos in Tool
-	 * and Component\Definition exist to avoid, if the instances survive long enough
-	 * to benefit from them.
+	 * and in the Definition trait exist to avoid, if the instances survive long
+	 * enough to benefit from them.
 	 *
-	 * @access private
 	 * @var ?array<int, \Skeleton\Application\Mcp\Tool> $tools
+	 * @access private
 	 */
 	private ?array $tools = null;
 
@@ -91,67 +150,21 @@ class Mcp extends \Skeleton\Core\Application {
 	 * null until asked: the answer belongs to one request, and it is the difference
 	 * between a visitor and a failure.
 	 *
-	 * @var ?bool $credential_presented
 	 * @access private
 	 */
 	private ?bool $credential_presented = null;
 
 	/**
-	 * Whether this request carries a credential every handler accepts
+	 * Whether this request carries a credential at least one handler accepts
 	 *
 	 * null until asked, for the same reason, and asked by the listing, the tool
-	 * lookup, the refusal and the description of the server alike.
+	 * lookup, the refusal and the description of the server alike. "At least one",
+	 * because the handlers in this question are the authenticating ones and two ways
+	 * to prove who you are are alternatives: see get_credential_handlers().
 	 *
-	 * @var ?bool $credential_valid
 	 * @access private
 	 */
 	private ?bool $credential_valid = null;
-
-	/**
-	 * Get details
-	 *
-	 * @access protected
-	 */
-	protected function get_details(): void {
-		parent::get_details();
-
-		$this->tool_path = $this->path . '/tool/';
-		$this->security_path = $this->path . '/security/';
-		$this->component_path = $this->path . '/component/';
-
-		$this->tool_namespace = "\\App\\" . ucfirst($this->name) . "\\Tool\\";
-		$this->security_namespace = "\\App\\" . ucfirst($this->name) . "\\Security\\";
-		$this->component_namespace = "\\App\\" . ucfirst($this->name) . "\\Component\\";
-
-		$autoloader = new \Skeleton\Core\Autoloader();
-		$autoloader->add_namespace($this->tool_namespace, $this->tool_path);
-		$autoloader->add_namespace($this->security_namespace, $this->security_path);
-		$autoloader->add_namespace($this->component_namespace, $this->component_path);
-		$autoloader->register();
-	}
-
-	/**
-	 * Load the config
-	 *
-	 * @access protected
-	 */
-	protected function load_config(): void {
-		/**
-		 * Set some defaults
-		 */
-		$this->config->hostnames = [];
-
-		// MCP server metadata (should be overwritten by the app)
-		$this->config->server_name = $this->name;
-		$this->config->server_version = '1.0.0';
-		$this->config->protocol_version = '2025-06-18';
-		$this->config->instructions = '';
-
-		// what a caller who showed no credential is told instead, see run()
-		$this->config->instructions_public = '';
-
-		parent::load_config();
-	}
 
 	/**
 	 * Run the application
@@ -163,15 +176,16 @@ class Mcp extends \Skeleton\Core\Application {
 	 * @access public
 	 */
 	public function run(): void {
-		// response is always JSON
-		header('Content-Type: application/json');
-
 		// A request for a well-known document is not this endpoint answered with the
 		// wrong verb: there is no such document here, and 405 would advertise one that
 		// only wants a different method — which is exactly what a client doing OAuth
-		// discovery needs somebody to believe.
+		// discovery needs somebody to believe. Answered without a JSON body, because
+		// the answer is the framework's status page and not a JSON-RPC response.
+		// The second argument keeps the answer inside this method: Status would
+		// otherwise exit the process, and run() has no business ending a request it
+		// did not begin.
 		if ($this->is_well_known_request() === true) {
-			\Skeleton\Core\Http\Status::code_404('Not Found');
+			\Skeleton\Core\Http\Status::code_404('', false);
 
 			return;
 		}
@@ -179,15 +193,24 @@ class Mcp extends \Skeleton\Core\Application {
 		$http_method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
 		if ($http_method !== 'POST') {
-			\Skeleton\Core\Http\Status::code_405('Method Not Allowed');
+			\Skeleton\Core\Http\Status::code_405('', false);
+
 			return;
 		}
+
+		// response is always JSON from here on: every answer below is a JSON-RPC body
+		header('Content-Type: application/json');
 
 		// Read the body once and let everything below look at the same structure: the
 		// refusal has to answer the request the caller actually sent, with its id, and
 		// the handler has to see the same interpretation of it we did.
 		$raw = (string)file_get_contents('php://input');
 		$request = \Skeleton\Application\Mcp\Handler::decode($raw);
+
+		// The stream is spent: everything after this point that wants to know what was
+		// asked reads it off the application, which is where it was read.
+		$this->request = $request;
+		$this->jsonrpc_method = $this->get_jsonrpc_method($request);
 
 		// A caller who offered a credential they cannot back up is refused here, on
 		// every method, before the handler is reached: they are mid-authentication and
@@ -211,25 +234,11 @@ class Mcp extends \Skeleton\Core\Application {
 		// JSON-RPC needs an HTTP 202 Accepted if no outputs
 		if ($response === null) {
 			http_response_code(202);
+
 			return;
 		}
 
 		$this->send($response, $this->is_auth_failure($response));
-	}
-
-	/**
-	 * Get events
-	 *
-	 * @access protected
-	 * @return array $events
-	 */
-	protected function get_events(): array {
-		$parent_events = parent::get_events();
-		$mcp_events = [
-			'Tool' => '\\Skeleton\\Application\\Mcp\\Event\\Tool',
-		];
-
-		return array_merge($parent_events, $mcp_events);
 	}
 
 	/**
@@ -245,7 +254,7 @@ class Mcp extends \Skeleton\Core\Application {
 	 * key.
 	 *
 	 * @access public
-	 * @return \Skeleton\Application\Mcp\Tool[] $tools
+	 * @return array<int, \Skeleton\Application\Mcp\Tool> $tools The tools this caller may list
 	 */
 	public function get_tools(): array {
 		$tools = $this->get_all_tools();
@@ -274,8 +283,9 @@ class Mcp extends \Skeleton\Core\Application {
 	 * the wrong place. A name that exists nowhere keeps its -32602.
 	 *
 	 * @access public
-	 * @param string $name
-	 * @return \Skeleton\Application\Mcp\Tool $tool
+	 * @param string $name The name the client called
+	 * @return \Skeleton\Application\Mcp\Tool $tool The tool that answers to that name
+	 * @throws \Skeleton\Application\Mcp\Jsonrpc\Exception When no tool of this application carries that name
 	 */
 	public function get_tool(string $name): \Skeleton\Application\Mcp\Tool {
 		foreach ($this->get_all_tools() as $tool) {
@@ -294,53 +304,136 @@ class Mcp extends \Skeleton\Core\Application {
 	}
 
 	/**
-	 * Get all security handlers defined by the application
+	 * Get the one instance of a security handler for this request
+	 *
+	 * A handler that resolves who is calling pays for it, and paying per tool is how a
+	 * credential check becomes the cost of a page. Tools ask for their handlers through
+	 * this method, so the static key of a request is read once and the principal behind a
+	 * bearer token is looked up once, whoever the tool.
 	 *
 	 * @access public
-	 * @return \Skeleton\Application\Mcp\Security[] $securities
+	 * @param string $classname The handler class a tool declared
+	 * @return \Skeleton\Application\Mcp\Security $security The shared instance
+	 * @throws \Exception When the class does not exist
 	 */
-	public function get_security(): array {
-		return $this->instantiate_all($this->security_path, $this->security_namespace);
+	public function get_security_handler(string $classname): \Skeleton\Application\Mcp\Security {
+		if (isset($this->security_instances[$classname]) === false) {
+			if (class_exists($classname) === false) {
+				throw new \Exception('Unknown security class ' . $classname . ' for application ' . $this->name);
+			}
+
+			$this->security_instances[$classname] = new $classname();
+		}
+
+		return $this->security_instances[$classname];
+	}
+
+	/**
+	 * Get details
+	 *
+	 * The four directories an MCP application may hold, and their namespaces. Tools,
+	 * security handlers, results and helpers are all autoloaded from here: only the
+	 * first two are ever instantiated by this class, the others are looked up by name
+	 * when a tool asks for them.
+	 *
+	 * @access protected
+	 */
+	protected function get_details(): void {
+		parent::get_details();
+
+		$this->tool_path = $this->path . '/tool/';
+		$this->security_path = $this->path . '/security/';
+		$this->definition_path = $this->path . '/definition/';
+		$this->helper_path = $this->path . '/helper/';
+
+		$this->tool_namespace = '\\App\\' . ucfirst($this->name) . '\\Tool\\';
+		$this->security_namespace = '\\App\\' . ucfirst($this->name) . '\\Security\\';
+		$this->definition_namespace = '\\App\\' . ucfirst($this->name) . '\\Definition\\';
+		$this->helper_namespace = '\\App\\' . ucfirst($this->name) . '\\Helper\\';
+
+		$autoloader = new \Skeleton\Core\Autoloader();
+		$autoloader->add_namespace($this->tool_namespace, $this->tool_path);
+		$autoloader->add_namespace($this->security_namespace, $this->security_path);
+		$autoloader->add_namespace($this->definition_namespace, $this->definition_path);
+		$autoloader->add_namespace($this->helper_namespace, $this->helper_path);
+		$autoloader->register();
+	}
+
+	/**
+	 * Load the config
+	 *
+	 * @access protected
+	 */
+	protected function load_config(): void {
+		/**
+		 * Set some defaults
+		 */
+		$this->config->hostnames = [];
+
+		// MCP server metadata (should be overwritten by the app)
+		$this->config->server_name = $this->name;
+		$this->config->server_version = '1.0.0';
+		$this->config->protocol_version = '2025-06-18';
+		$this->config->instructions = '';
+
+		// what a caller who showed no credential is told instead, see run()
+		$this->config->instructions_public = '';
+
+		parent::load_config();
+	}
+
+	/**
+	 * Get events
+	 *
+	 * @access protected
+	 * @return array<string, string> $events The events this application offers
+	 */
+	protected function get_events(): array {
+		$parent_events = parent::get_events();
+		$mcp_events = [
+			'Tool' => '\\Skeleton\\Application\\Mcp\\Event\\Tool',
+		];
+
+		return array_merge($parent_events, $mcp_events);
 	}
 
 	/**
 	 * Get all tools defined in the application, whoever the caller is
 	 *
 	 * @access protected
-	 * @return \Skeleton\Application\Mcp\Tool[] $tools
+	 * @return array<int, \Skeleton\Application\Mcp\Tool> $tools Every tool of the application
 	 */
 	protected function get_all_tools(): array {
 		if ($this->tools !== null) {
 			return $this->tools;
 		}
 
-		return $this->tools = $this->instantiate_all($this->tool_path, $this->tool_namespace);
+		return $this->tools = $this->instantiate_tools();
 	}
 
 	/**
-	 * Instantiate every class in a directory of the application
+	 * Instantiate every tool of the application
 	 *
-	 * Tools, security handlers and (through the autoloader registered in
-	 * get_details()) result components are all found the same way: a file under the
-	 * application directory whose path below it spells its class name. Two copies of
-	 * that walk is two ways for the two kinds to drift apart in what they accept as a
-	 * class name, which the autoloader trap in the README makes an easy mistake to
-	 * make.
+	 * A tool is a file under `tool/` whose path below that directory spells its class
+	 * name. Nothing is filtered out: every `.php` in there becomes a tool, which is why
+	 * a helper or an abstract class left in that directory is advertised — and why the
+	 * autoloader trap in the README (a class name may not hold an underscore) is worth
+	 * knowing before the first `tools/list` dies with an opaque `-32603`.
 	 *
 	 * @access protected
-	 * @param string $path The directory to walk
-	 * @param string $namespace The namespace the path is relative to
-	 * @return array<int, object> $objects The instances, in path order
+	 * @return array<int, \Skeleton\Application\Mcp\Tool> $tools The instances, in path order
 	 */
-	protected function instantiate_all(string $path, string $namespace): array {
-		if (file_exists($path) === false) {
+	protected function instantiate_tools(): array {
+		$tool_path = (string)$this->tool_path;
+
+		if ($tool_path === '' || file_exists($tool_path) === false) {
 			return [];
 		}
 
-		$objects = [];
+		$tools = [];
 
-		foreach (\Skeleton\Application\Mcp\Util::rglob($path . '*.php') as $file) {
-			$file = str_replace($path, '', $file);
+		foreach (\Skeleton\Application\Mcp\Util::rglob($tool_path . '*.php') as $file) {
+			$file = str_replace($tool_path, '', $file);
 			$pathinfo = pathinfo($file);
 
 			$classname = '';
@@ -352,46 +445,74 @@ class Mcp extends \Skeleton\Core\Application {
 			$classname .= $pathinfo['filename'];
 			$classname = str_replace(DIRECTORY_SEPARATOR, '\\', $classname);
 
-			$objects[] = new ($namespace . $classname)();
+			$tools[] = new ($this->tool_namespace . $classname)();
 		}
 
-		return $objects;
+		return $tools;
 	}
 
 	/**
-	 * Get the security handlers this application has to answer to
+	 * Get the handler classes at least one tool declares
 	 *
-	 * The ones of the application itself (app/<name>/security/) plus the ones every
-	 * tool declares with @security, deduplicated by class: asking the same handler
-	 * twice about the same request would only ask it twice.
+	 * Read from the docblocks, so it asks the tools what they name without instantiating
+	 * a single handler — which is what keeps this and get_security_handler() from
+	 * calling each other.
+	 *
+	 * @access protected
+	 * @return array<string, bool> $classes Class name => true, in the order first seen
+	 */
+	protected function get_declared_security_classes(): array {
+		if ($this->declared_security_classes !== null) {
+			return $this->declared_security_classes;
+		}
+
+		$classes = [];
+
+		foreach ($this->get_all_tools() as $tool) {
+			foreach ($tool->get_declared_security_classes() as $classname) {
+				$classes[$classname] = true;
+			}
+		}
+
+		return $this->declared_security_classes = $classes;
+	}
+
+	/**
+	 * Get the handlers that answer for the caller's identity
+	 *
+	 * Two filters, and both are load-bearing. Only handlers **at least one tool
+	 * declared** are asked: a class sitting in `security/` that nothing named must not
+	 * become an alternative way to authenticate, which is what an OR would let it do —
+	 * under the AND this method replaces it could only ever lock people out, so the
+	 * difference is between a bug a suite notices and a door nobody notices. And only
+	 * handlers that **authenticate** are asked: an authorization handler answers a
+	 * question about a tool, not about the caller, and letting it into a verdict that
+	 * applies to `initialize` and `tools/list` would answer a perfectly authenticated
+	 * caller with a 401 because one tool asked for more than they hold.
 	 *
 	 * @access protected
 	 * @return array<int, \Skeleton\Application\Mcp\Security> $handlers
 	 */
-	protected function get_security_handlers(): array {
-		if ($this->security_handlers !== null) {
-			return $this->security_handlers;
-		}
-
+	protected function get_credential_handlers(): array {
 		$handlers = [];
 
-		foreach ($this->get_security() as $security) {
-			$handlers[get_class($security)] = $security;
-		}
+		foreach ($this->get_declared_security_classes() as $classname => $declared) {
+			$security = $this->get_security_handler($classname);
 
-		foreach ($this->get_all_tools() as $tool) {
-			foreach ($tool->get_security() as $security) {
-				$handlers[get_class($security)] = $security;
+			if ($security->is_authenticating() === true) {
+				$handlers[] = $security;
 			}
 		}
 
-		$this->security_handlers = array_values($handlers);
-
-		return $this->security_handlers;
+		return $handlers;
 	}
 
 	/**
 	 * Tell whether the caller presented a credential of any kind
+	 *
+	 * Asked of the credential handlers only: what an authorization handler considers
+	 * "presented" is a fact about a tool, not about the request, and a caller who sent a
+	 * good key and holds no role is a caller who authenticated.
 	 *
 	 * @access protected
 	 * @return bool $presented Whether somebody tried to authenticate
@@ -403,7 +524,7 @@ class Mcp extends \Skeleton\Core\Application {
 
 		$this->credential_presented = false;
 
-		foreach ($this->get_security_handlers() as $security) {
+		foreach ($this->get_credential_handlers() as $security) {
 			if ($security->presents_credential() === true) {
 				$this->credential_presented = true;
 
@@ -417,8 +538,16 @@ class Mcp extends \Skeleton\Core\Application {
 	/**
 	 * Tell whether the credential this request carries is one we accept
 	 *
-	 * Every handler has to accept the caller: a tool guarded by two of them is not
-	 * open to a request that satisfies one.
+	 * **At least one** authenticating handler has to accept the caller. A server that
+	 * takes a static key and a bearer token is not asking for both, and a caller who
+	 * proved their identity one of the two ways is authenticated whatever the other
+	 * handler says about a credential they never sent. With a single kind of credential
+	 * — the case every application had until a second one existed — one handler is both
+	 * the OR and the AND, so nothing changes for it.
+	 *
+	 * An application that declares no authenticating handler at all accepts everybody:
+	 * there is nobody to ask, and the empty OR of "prove who you are" is the same answer
+	 * as "anybody may look", which is how a tool without @security is public here too.
 	 *
 	 * @access protected
 	 * @return bool $valid Whether this caller may see the protected tools
@@ -428,17 +557,27 @@ class Mcp extends \Skeleton\Core\Application {
 			return $this->credential_valid;
 		}
 
-		$this->credential_valid = true;
+		$handlers = $this->get_credential_handlers();
 
-		foreach ($this->get_security_handlers() as $security) {
+		if (count($handlers) === 0) {
+			$this->credential_valid = true;
+
+			return $this->credential_valid;
+		}
+
+		foreach ($handlers as $security) {
 			try {
 				$security->handle();
-			} catch (\Skeleton\Application\Mcp\Jsonrpc\Exception $e) {
-				$this->credential_valid = false;
 
-				break;
+				$this->credential_valid = true;
+
+				return $this->credential_valid;
+			} catch (\Skeleton\Application\Mcp\Jsonrpc\Exception) {
+				// the next handler may still accept this caller
 			}
 		}
+
+		$this->credential_valid = false;
 
 		return $this->credential_valid;
 	}
@@ -448,18 +587,30 @@ class Mcp extends \Skeleton\Core\Application {
 	 *
 	 * The handler's own exception, code and message, so that "you have no key", "that
 	 * key is not ours" and "this server has no keys configured" all arrive in the same
-	 * words whoever asked.
+	 * words whoever asked — and the words of the handler whose credential the caller
+	 * actually offered are the useful ones: somebody who sent a bearer token wants to
+	 * hear about tokens, not about a staff key list they were never in.
 	 *
 	 * @access protected
 	 * @throws \Skeleton\Application\Mcp\Jsonrpc\Exception With the handler's own code and message
 	 */
 	protected function refuse_caller(): void {
-		foreach ($this->get_security_handlers() as $security) {
+		$refusal = null;
+
+		foreach ($this->get_credential_handlers() as $security) {
+			if ($refusal === null && $security->presents_credential() === false) {
+				continue;
+			}
+
 			try {
 				$security->handle();
 			} catch (\Skeleton\Application\Mcp\Jsonrpc\Exception $e) {
-				throw $e;
+				$refusal ??= $e;
 			}
+		}
+
+		if ($refusal !== null) {
+			throw $refusal;
 		}
 
 		// Nothing refused us, and yet we are refusing: say the least we can say, in the
@@ -483,7 +634,7 @@ class Mcp extends \Skeleton\Core\Application {
 	 *
 	 * @access protected
 	 * @param mixed $request The decoded request body
-	 * @return ?array<string, string|array> $refusal The JSON-RPC error to answer with, null to continue
+	 * @return ?array<string, mixed> $refusal The JSON-RPC error to answer with, null to continue
 	 */
 	protected function refuse_bad_credential(mixed $request): ?array {
 		if ($this->credential_was_presented() === false) {
@@ -561,10 +712,12 @@ class Mcp extends \Skeleton\Core\Application {
 	 * credential looks like.
 	 *
 	 * @access protected
-	 * @param array<string, int|string|bool|float|array|null> $response The JSON-RPC response
+	 * @param array<string, mixed> $response The JSON-RPC response
 	 * @param bool $unauthorized Whether the whole answer is a credential refusal
 	 */
 	protected function send(array $response, bool $unauthorized = false): void {
+		$this->response = $response;
+
 		if ($unauthorized === true) {
 			$security = $this->get_refusing_handler();
 
@@ -579,23 +732,47 @@ class Mcp extends \Skeleton\Core\Application {
 			}
 		}
 
-		echo json_encode($response, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+		$json = json_encode($response, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+
+		if ($json === false) {
+			// Nothing of this response can be written as JSON, so nothing of it can be
+			// sent either. The answer has to be a valid JSON-RPC error, which rules out
+			// echoing anything that came from the response itself — the id included,
+			// since the id is part of what would not encode.
+			error_log('MCP: the response could not be encoded: ' . json_last_error_msg());
+
+			$json = '{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}';
+		}
+
+		echo $json;
 	}
 
 	/**
-	 * Get the first handler that says what its refusals cost
+	 * Get the handler that says what its refusals cost
+	 *
+	 * The one whose credential the caller actually offered, and failing that the first
+	 * that says anything: a caller who sent a bearer token and was refused should be
+	 * challenged for a token, not pointed at a staff key list they never used.
 	 *
 	 * @access protected
 	 * @return ?\Skeleton\Application\Mcp\Security $security The handler that maps its own refusals
 	 */
 	protected function get_refusing_handler(): ?\Skeleton\Application\Mcp\Security {
-		foreach ($this->get_security_handlers() as $security) {
-			if ($security->get_refusal_code() !== null) {
+		$fallback = null;
+
+		foreach ($this->get_credential_handlers() as $security) {
+			if ($security->get_refusal_code() === null) {
+				continue;
+			}
+
+			if ($security->presents_credential() === true) {
 				return $security;
 			}
+
+			$fallback ??= $security;
 		}
 
-		return null;
+		return $fallback;
 	}
 
 	/**
@@ -606,7 +783,7 @@ class Mcp extends \Skeleton\Core\Application {
 	 * so does a response that carries a result.
 	 *
 	 * @access protected
-	 * @param array<string, int|string|array> $response The JSON-RPC response, or a list of them
+	 * @param array<string, mixed> $response The JSON-RPC response, or a list of them
 	 * @return bool $unauthorized Whether every member refuses the credential
 	 */
 	protected function is_auth_failure(array $response): bool {
@@ -618,7 +795,7 @@ class Mcp extends \Skeleton\Core\Application {
 
 		$codes = [];
 
-		foreach ($this->get_security_handlers() as $security) {
+		foreach ($this->get_credential_handlers() as $security) {
 			$refusal_code = $security->get_refusal_code();
 
 			if ($refusal_code !== null) {
@@ -639,6 +816,30 @@ class Mcp extends \Skeleton\Core\Application {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Get the JSON-RPC method a decoded body asks for
+	 *
+	 * One string for the one request the transport answers, null for anything that is
+	 * not a request at all — an unreadable body, or a batch (refused before the handler
+	 * is reached). The application reports it so a log line says what was asked even
+	 * when nothing dispatched.
+	 *
+	 * @access protected
+	 * @param mixed $request The decoded body
+	 * @return ?string $method The method name, null when there is none
+	 */
+	protected function get_jsonrpc_method(mixed $request): ?string {
+		if (is_array($request) === false || array_is_list($request) === true) {
+			return null;
+		}
+
+		if (isset($request['method']) === false || is_string($request['method']) === false) {
+			return null;
+		}
+
+		return $request['method'];
 	}
 
 	/**
@@ -667,7 +868,9 @@ class Mcp extends \Skeleton\Core\Application {
 				continue;
 			}
 
-			if (strpos((string)parse_url($candidate, PHP_URL_PATH), '/.well-known/') === 0) {
+			$path = parse_url($candidate, PHP_URL_PATH);
+
+			if (is_string($path) === true && strpos($path, '/.well-known/') === 0) {
 				return true;
 			}
 		}

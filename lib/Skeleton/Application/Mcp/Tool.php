@@ -7,16 +7,17 @@ declare(strict_types=1);
  *
  * What a tool is made of: an execute() whose signature is its inputSchema, a class
  * docblock that is the description a model reads before deciding to call it, an optional
- * @security that says who may call it, and an optional @return that names the class
- * declaring the shape of the answer.
+ * security annotation that says who may call it, and a return docblock that names the
+ * class declaring the shape of the answer.
  *
  * Everything the client is told is *derived* from that, never written twice: see
  * Docblock for how the docblocks are read, Util::to_json_type() for how a PHP type
- * becomes a JSON Schema type, and Component\Definition for the result side of the same
+ * becomes a JSON Schema type, and the Definition trait for the result side of the same
  * idea. A tool that states a bound it does not enforce, or enforces one it does not
  * state, is the failure this design exists to prevent — get_input_constraints() is read
  * by both the schema and the check.
  *
+ * @author Gerry Demaret <gerry@tigron.be>
  * @author Roan Buysse <roan@tigron.be>
  */
 
@@ -32,14 +33,28 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	private ?array $security = null;
 
 	/**
+	 * The answer of this call, already reduced against its declaration
+	 *
+	 * Set once by `call()` and read by `Handler`: the payload is built for the log line
+	 * and for the client from the same reduction, never twice.
+	 *
+	 * @access private
+	 * @var ?array<string, mixed> $reduced
+	 */
+	private ?array $reduced = null;
+
+	/**
 	 * Constructor
 	 *
 	 * @access public
+	 * @throws \Exception When the class does not declare a public execute()
 	 */
 	public function __construct() {
-		// execute() can not be an abstract function as it has a varying
-		// sigature; PHP doesn't support that
-		if (!method_exists($this, 'execute')) {
+		// execute() can not be an abstract function as it has a varying signature; PHP
+		// doesn't support that. So the one thing every tool must have is checked here,
+		// where a missing one is a fatal error at the moment it is instantiated rather
+		// than an opaque refusal at the moment a client calls it.
+		if (method_exists($this, 'execute') === false) {
 			throw new \Exception(get_class($this) . ' must declare a public execute() method');
 		}
 	}
@@ -47,14 +62,20 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	/**
 	 * Get the tool name (advertised to the MCP client)
 	 *
+	 * The path below `tool/`, flattened: `Search/Organization.php` is
+	 * `search_organization`, which is the snake_case the protocol asks for and the same
+	 * name the file spells. A name is lowercased because the lookup is a comparison, and
+	 * two tools that differ only in case would be one tool to a client and two to the
+	 * server.
+	 *
 	 * @access public
-	 * @return string $name
+	 * @return string $name The advertised name
 	 */
 	public function get_name(): string {
 		$application = \Skeleton\Core\Application::get();
 		$class = new \ReflectionClass($this);
 		$filename = $class->getFileName();
-		$filename = str_replace($application->tool_path, '', $filename);
+		$filename = str_replace((string)$application->tool_path, '', (string)$filename);
 		$filename = pathinfo($filename);
 
 		if ($filename['dirname'] !== '.') {
@@ -63,7 +84,7 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 			$name = $filename['filename'];
 		}
 
-		// flatten whatever result with undersores
+		// flatten whatever the result is with underscores
 		$name = str_replace(['/', '\\'], '_', $name);
 
 		return strtolower($name);
@@ -76,7 +97,7 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	 * model reads before it decides whether to call this tool at all.
 	 *
 	 * @access public
-	 * @return string $description
+	 * @return string $description What the client is told the tool does
 	 */
 	public function get_description(): string {
 		$docblock = Docblock::read((new \ReflectionClass($this))->getDocComment());
@@ -98,7 +119,7 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	 * comes from get_input_constraints(). Nothing here is asked of the author twice.
 	 *
 	 * @access public
-	 * @return array $schema
+	 * @return array<string, mixed> $schema The inputSchema to advertise
 	 */
 	public function get_input_schema(): array {
 		$reflection = new \ReflectionMethod($this, 'execute');
@@ -127,16 +148,20 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 
 			// a nullable parameter accepts null too: say so, otherwise a client
 			// that sends null dies on a PHP TypeError
-			if ($reflection_type instanceof \ReflectionNamedType && $reflection_type->allowsNull() && $reflection_type->getName() !== 'null') {
+			$accepts_null = $reflection_type instanceof \ReflectionNamedType
+				&& $reflection_type->allowsNull() === true
+				&& $reflection_type->getName() !== 'null';
+
+			if ($accepts_null === true) {
 				$property['type'] = [ $property['type'], 'null' ];
 			}
 
-			if (!empty($meta['description'])) {
+			if (empty($meta['description']) === false) {
 				$property['description'] = trim($meta['description']);
 			}
 
 			// what the parameter falls back to when it is left out
-			if ($parameter->isOptional()) {
+			if ($parameter->isOptional() === true) {
 				$property['default'] = $parameter->getDefaultValue();
 			}
 
@@ -147,7 +172,7 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 
 			$properties[$name] = $property;
 
-			if (!$parameter->isOptional()) {
+			if ($parameter->isOptional() === false) {
 				$required[] = $name;
 			}
 		}
@@ -177,7 +202,7 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	 * when there is nothing to say.
 	 *
 	 * @access public
-	 * @return array|null $annotations
+	 * @return ?array<string, mixed> $annotations The annotations to advertise, null for none
 	 */
 	public function get_annotations(): ?array {
 		return null;
@@ -198,7 +223,7 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	 * the mistake this hook exists to make impossible.
 	 *
 	 * @access public
-	 * @return array $constraints Keywords per parameter name
+	 * @return array<string, array<string, mixed>> $constraints Keywords per parameter name
 	 */
 	public function get_input_constraints(): array {
 		return [];
@@ -211,13 +236,13 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	 * to it, and a client is allowed to reject anything else.
 	 *
 	 * Nothing to write here for the usual case: when the @return docblock of
-	 * execute() names a class that declares its shape (a get_definition_schema()
-	 * method, see Component\Definition), that schema is advertised. A tool that
+	 * execute() names a class that declares its shape (a Definition, see
+	 * `Skeleton\Application\Mcp\Definition`), that schema is advertised. A tool that
 	 * returns a plain array it does not model can still override this method, and a
 	 * tool with no structured output gets null and no outputSchema at all.
 	 *
 	 * @access public
-	 * @return array|null $output_schema
+	 * @return ?array<string, mixed> $output_schema The schema to advertise, null for none
 	 */
 	public function get_output_schema(): ?array {
 		$docblock = Docblock::read((new \ReflectionMethod($this, 'execute'))->getDocComment());
@@ -229,20 +254,27 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 
 		$classname = ltrim($return_type, '\\');
 
-		if ($classname === '' || class_exists($classname) === false || method_exists($classname, 'get_definition_schema') === false) {
+		$names_a_definition = $classname !== ''
+			&& is_a($classname, \Skeleton\Application\Mcp\DefinitionInterface::class, true) === true;
+
+		if ($names_a_definition === false) {
 			return null;
 		}
 
 		$definition = new $classname();
 
-		return $definition->get_definition_schema();
+		return $definition->get_mcp_definition_schema();
 	}
 
 	/**
 	 * Combined tool definition
 	 *
+	 * What `tools/list` hands out for this tool: only the keys the tool actually
+	 * says something about are included, so a client never reads an empty
+	 * `annotations` block as a statement.
+	 *
 	 * @access public
-	 * @return array $definition
+	 * @return array<string, mixed> $definition The definition to advertise
 	 */
 	public function get_definition(): array {
 		$definition = [
@@ -267,8 +299,12 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	}
 
 	/**
-	 * accept_request (Core\Application\Module needs this, but we need something
-	 * more complicated); just ignore this
+	 * Accept the request
+	 *
+	 * The module contract this package does not use: a tool is not routed to, it is
+	 * called by name out of a JSON-RPC body, which is why the request never passes
+	 * through here. `Skeleton\Core\Application\Module` declares it abstract, so it is
+	 * answered with nothing.
 	 *
 	 * @access public
 	 */
@@ -278,19 +314,192 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	/**
 	 * Call security and make the tool handle the request
 	 *
+	 * The order is the policy: bootstrap, the credential (at least one of the
+	 * authenticating handlers must accept the caller), the authorization handlers
+	 * (every one of them must agree), the arguments, only then `execute()`, and last of
+	 * all the reduction of the answer against its own declaration. The teardown event is
+	 * fired on **every** path out of here, refused calls and failures included, because
+	 * the calls worth auditing are precisely the ones that did not produce an answer — an
+	 * event that only runs on success measures the traffic and not the truth.
+	 *
+	 * The reduction happens here, once, and is kept: the handler answers from it rather
+	 * than asking the object again. A payload that computes (rows off a pager, labels off
+	 * a table) would otherwise be built twice per call — the second time by a log line
+	 * that only counts it.
+	 *
 	 * @access public
-	 * @param array $arguments
-	 * @return mixed
+	 * @param array<string, mixed> $arguments The arguments as the client sent them
+	 * @return mixed $result What execute() answered
+	 * @throws \Skeleton\Application\Mcp\Jsonrpc\Exception When the caller is refused
+	 * @throws \Skeleton\Application\Mcp\Exception When an argument does not fit or the answer breaks its map
 	 */
-	public function call(array $arguments) {
+	public function call(array $arguments): mixed {
 		$application = \Skeleton\Core\Application::get();
 		$application->call_event_if_exists('tool', 'bootstrap', [$this]);
 
-		// Call security defined in the docblock
-		foreach ($this->get_security() as $security) {
-			$security->handle();
+		$started = microtime(true);
+
+		try {
+			$this->check_security();
+			$ordered = $this->order_arguments($arguments);
+			$result = $this->run_execute($ordered);
+
+			$this->reduced = $result instanceof \Skeleton\Application\Mcp\DefinitionInterface
+				? \Skeleton\Application\Mcp\Reducer::reduce($result, $this->get_name())
+				: null;
+		} catch (\Throwable $e) {
+			// A code is what an MCP exception carries; anything else — a database
+			// failure whose code is a SQLSTATE, say — has no number to log, and the
+			// message beside it says what happened.
+			$code = $e->getCode();
+
+			$this->conclude($started, is_int($code) === true ? $code : null, $e->getMessage(), null, $arguments);
+
+			throw $e;
 		}
 
+		$this->conclude($started, null, null, $this->reduced, $arguments);
+
+		return $result;
+	}
+
+	/**
+	 * Get the answer already reduced against its declaration, if this call had one
+	 *
+	 * `Handler` takes the structuredContent from here. It is null before `call()` has
+	 * run, and for a tool that returns a plain array or a string, which has no
+	 * declaration to reduce against.
+	 *
+	 * @access public
+	 * @return ?array<string, mixed> $info The reduced answer, null when there is none
+	 */
+	public function get_reduced_info(): ?array {
+		return $this->reduced;
+	}
+
+	/**
+	 * Get the security classes this tool declares, without instantiating them
+	 *
+	 * The application builds the request's one instance per handler class, and it
+	 * needs to know which classes to build before any handler runs: reading the tags
+	 * is that question, and instantiating them is another. An unknown class is fatal
+	 * here, where the author put it, rather than a silent skip.
+	 *
+	 * @access public
+	 * @return array<int, string> $classnames The handlers, in the order they are declared
+	 */
+	public function get_declared_security_classes(): array {
+		$docblock = Docblock::read((new \ReflectionMethod($this, 'execute'))->getDocComment());
+		$classnames = [];
+
+		foreach ($docblock?->get_tag_lines('security') ?? [] as $classname) {
+			if (class_exists($classname) === false) {
+				throw new \Exception('Unknown security class ' . $classname . ' for tool ' . $this->get_name());
+			}
+
+			$classnames[] = $classname;
+		}
+
+		return $classnames;
+	}
+
+	/**
+	 * Get the security handlers of this tool, from its @security tags
+	 *
+	 * The tags are read from the raw text rather than through a parser, and an unknown
+	 * class is a fatal error rather than a skipped line: a tool the author meant to
+	 * guard must never end up open because of a typo in its own docblock. The
+	 * instances come from the application, which holds one per class per request, so
+	 * a handler that resolves the caller once answers every tool of that request
+	 * without reading the same credential twice.
+	 *
+	 * @access public
+	 * @return array<int, \Skeleton\Application\Mcp\Security> $securities The handlers this tool declared
+	 */
+	public function get_security(): array {
+		if ($this->security !== null) {
+			return $this->security;
+		}
+
+		$application = \Skeleton\Core\Application::get();
+		$securities = [];
+
+		foreach ($this->get_declared_security_classes() as $classname) {
+			$securities[] = $application->get_security_handler($classname);
+		}
+
+		return $this->security = $securities;
+	}
+
+	/**
+	 * Run the handlers this tool declares
+	 *
+	 * Two groups, two rules. Authenticating handlers are an **OR**: a server that
+	 * accepts a static key *and* a bearer token is not asking a caller to hold both,
+	 * and the first handler that accepts the caller has answered the only question the
+	 * group asks. Authorizing handlers are an **AND**: each one states something the
+	 * caller must also satisfy, and one that refuses is a refusal whatever the others
+	 * said.
+	 *
+	 * A tool that declares no authenticating handler is not asked one: leaving
+	 * `@security` off is how a tool says it may be used by anybody (see the
+	 * application's listing), and an empty group cannot fail an OR.
+	 *
+	 * @access private
+	 * @throws \Skeleton\Application\Mcp\Jsonrpc\Exception When no credential was accepted
+	 */
+	private function check_security(): void {
+		$refusal = null;
+		$credentials = 0;
+		$authenticated = false;
+
+		foreach ($this->get_security() as $security) {
+			if ($security->is_authenticating() === false) {
+				continue;
+			}
+
+			$credentials++;
+
+			try {
+				$security->handle();
+				$authenticated = true;
+
+				break;
+			} catch (\Skeleton\Application\Mcp\Jsonrpc\Exception $e) {
+				$refusal ??= $e;
+			}
+		}
+
+		// $refusal is set whenever the loop above refused a credential and admitted
+		// none: a handler either throws or lets the caller through, so an unaccepted
+		// caller was refused by somebody who has words for it.
+		if ($credentials > 0 && $authenticated === false) {
+			throw $refusal;
+		}
+
+		foreach ($this->get_security() as $security) {
+			if ($security->is_authenticating() === true) {
+				continue;
+			}
+
+			$security->handle();
+		}
+	}
+
+	/**
+	 * Bring the client's arguments into the order execute() wants them in
+	 *
+	 * Every parameter is checked against its own declaration and against the bounds
+	 * the tool stated for it, an argument that is not a parameter is refused (answering
+	 * as if it had been left out is how a wrong result looks like a right one), and a
+	 * required one that never arrived is a refusal rather than a null.
+	 *
+	 * @access private
+	 * @param array $arguments The arguments as the client sent them
+	 * @return array<int, mixed> $ordered The values, in parameter order
+	 * @throws \Skeleton\Application\Mcp\Jsonrpc\Exception When an argument is missing or unknown
+	 */
+	private function order_arguments(array $arguments): array {
 		$reflection = new \ReflectionMethod($this, 'execute');
 		$constraints = $this->get_input_constraints();
 		$ordered = [];
@@ -303,7 +512,7 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 			if (array_key_exists($name, $arguments)) {
 				$this->check_argument($parameter, $arguments[$name], $constraints[$name] ?? []);
 				$ordered[] = $arguments[$name];
-			} elseif ($parameter->isOptional()) {
+			} elseif ($parameter->isOptional() === true) {
 				$ordered[] = $parameter->getDefaultValue();
 			} else {
 				throw new \Skeleton\Application\Mcp\Jsonrpc\Exception('Missing required argument ' . $name, -32602);
@@ -323,48 +532,30 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 			);
 		}
 
-		try {
-			$result = $reflection->invokeArgs($this, $ordered);
-		} catch (\TypeError $e) {
-			// Whatever PHP would have said names this class, its method and the
-			// position of every parameter: a client mistake must never become a
-			// tour of the implementation
-			throw new \Skeleton\Application\Mcp\Exception('Invalid arguments for tool ' . $this->get_name());
-		}
-
-		$application->call_event_if_exists('tool', 'teardown', [$this]);
-
-		return $result;
+		return $ordered;
 	}
 
 	/**
-	 * Get the security handlers of this tool, from its @security tags
+	 * Call execute() with the ordered arguments
 	 *
-	 * The tags are read from the raw text rather than through a parser, and an unknown
-	 * class is a fatal error rather than a skipped line: a tool the author meant to
-	 * guard must never end up open because of a typo in its own docblock. Resolved
-	 * once, because the application asks every tool what it declares on each request.
-	 *
-	 * @access public
-	 * @return \Skeleton\Application\Mcp\Security[] $securities
+	 * @access private
+	 * @param array<int, mixed> $ordered The values, in parameter order
+	 * @return mixed $result What the tool answered
+	 * @throws \Skeleton\Application\Mcp\Exception When PHP itself refuses the arguments
 	 */
-	public function get_security(): array {
-		if ($this->security !== null) {
-			return $this->security;
+	private function run_execute(array $ordered): mixed {
+		try {
+			return (new \ReflectionMethod($this, 'execute'))->invokeArgs($this, $ordered);
+		} catch (\TypeError $e) {
+			// Whatever PHP would have said names this class, its method and the
+			// position of every parameter: a client mistake must never become a
+			// tour of the implementation. The sentence the client gets says which tool
+			// refused, and the reason goes to the log, where the author of that tool
+			// is the one who can do something with it.
+			error_log('MCP: tool ' . $this->get_name() . ' refused the arguments it was given: ' . $e->getMessage());
+
+			throw new \Skeleton\Application\Mcp\Exception('Invalid arguments for tool ' . $this->get_name());
 		}
-
-		$docblock = Docblock::read((new \ReflectionMethod($this, 'execute'))->getDocComment());
-		$securities = [];
-
-		foreach ($docblock?->get_tag_lines('security') ?? [] as $classname) {
-			if (class_exists($classname) === false) {
-				throw new \Exception('Unknown security class ' . $classname . ' for tool ' . $this->get_name());
-			}
-
-			$securities[] = new $classname();
-		}
-
-		return $this->security = $securities;
 	}
 
 	/**
@@ -386,7 +577,7 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 	private function check_argument(\ReflectionParameter $parameter, $value, array $constraints = []): void {
 		$type = $parameter->getType();
 
-		if (!($type instanceof \ReflectionNamedType)) {
+		if ($type instanceof \ReflectionNamedType === false) {
 			// a union or an untyped parameter: nothing reliable to check against
 			return;
 		}
@@ -424,9 +615,12 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 				$says = 'a list or an object';
 				break;
 			default:
+				// A parameter of a class type: nothing a JSON body can carry is one, and
+				// the refusal says what the client can act on rather than naming the
+				// class it would have needed.
 				$classname = $type->getName();
 				$fits = class_exists($classname) === true && $value instanceof $classname;
-				$says = 'something else this tool does not accept';
+				$says = 'a value this tool can not read';
 		}
 
 		if ($fits === false) {
@@ -450,7 +644,9 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 			}
 
 			if ($keyword === 'maxLength' && is_string($value) === true && mb_strlen($value) > $bound) {
-				throw new \Skeleton\Application\Mcp\Exception($name . ' can not be more than ' . $bound . ' characters');
+				throw new \Skeleton\Application\Mcp\Exception(
+					$name . ' can not be more than ' . $bound . ' characters'
+				);
 			}
 
 			if ($keyword === 'enum' && is_array($bound) === true) {
@@ -462,9 +658,77 @@ abstract class Tool extends \Skeleton\Core\Application\Module {
 				}
 			}
 
-			if ($keyword === 'pattern' && is_string($value) === true && preg_match('/' . str_replace('/', '\/', $bound) . '/i', $value) !== 1) {
-				throw new \Skeleton\Application\Mcp\Exception($name . ' does not have the expected form');
+			if ($keyword === 'pattern' && is_string($value) === true) {
+				// the bound is the ECMA-262 source the client is also shown, so the
+				// delimiters are added here and nowhere else
+				$form = '/' . str_replace('/', '\/', $bound) . '/i';
+
+				if (preg_match($form, $value) !== 1) {
+					throw new \Skeleton\Application\Mcp\Exception($name . ' does not have the expected form');
+				}
 			}
 		}
+	}
+
+	/**
+	 * Tell the application this call is over, however it ended
+	 *
+	 * @access private
+	 * @param float $started When call() began, as a monotonic clock reading
+	 * @param ?int $error_code The code of the refusal, null when the call answered
+	 * @param ?string $error_message What was refused, null when the call answered
+	 * @param ?array<string, mixed> $info The reduced answer, null when there is none
+	 * @param array<string, mixed> $arguments What the client sent, so a refused call can be read back
+	 */
+	private function conclude(
+		float $started,
+		?int $error_code,
+		?string $error_message,
+		?array $info = null,
+		array $arguments = []
+	): void {
+		$application = \Skeleton\Core\Application::get();
+
+		if ($application->event_exists('tool', 'teardown') === false) {
+			return;
+		}
+
+		$application->call_event_if_exists('tool', 'teardown', [
+			$this,
+			[
+				'ok' => $error_code === null,
+				'error_code' => $error_code,
+				'error_message' => $error_message,
+				'duration_ms' => (int)round((microtime(true) - $started) * 1000),
+				'row_count' => self::count_rows($info),
+				'arguments' => $arguments,
+			],
+		]);
+	}
+
+	/**
+	 * Count the rows an answer hands out, for the log
+	 *
+	 * The size of the first list a reduced answer carries, which is what "how many rows
+	 * did this call return" means for a search and answers null for a detail. It is read
+	 * from the array `call()` already reduced, so counting rows never costs a second
+	 * reduction of a payload that had to compute them.
+	 *
+	 * @access private
+	 * @param ?array<string, mixed> $info The reduced answer, null when there is none
+	 * @return ?int $count The number of rows, null when the answer holds no list
+	 */
+	private static function count_rows(?array $info): ?int {
+		if ($info === null) {
+			return null;
+		}
+
+		foreach ($info as $value) {
+			if (is_array($value) === true && array_is_list($value) === true) {
+				return count($value);
+			}
+		}
+
+		return null;
 	}
 }

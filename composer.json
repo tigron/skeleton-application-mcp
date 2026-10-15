@@ -1,8 +1,14 @@
 {
     "name": "tigron/skeleton-application-mcp",
-    "description": "Model Context Protocol server application for skeleton",
+    "description": "Model Context Protocol server application for Skeleton",
     "type": "library",
     "license": "MIT",
+    "keywords": [
+        "mcp",
+        "model-context-protocol",
+        "skeleton",
+        "json-rpc"
+    ],
     "authors": [
         {
             "name": "Tigron bv",
@@ -11,6 +17,7 @@
     ],
     "require": {
         "php": ">=8.1",
+        "ext-mbstring": "*",
         "tigron/skeleton-core": ">=5",
         "phpdocumentor/reflection-docblock": "~5.2|^6.0"
     },

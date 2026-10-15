@@ -5,15 +5,7 @@ declare(strict_types=1);
 /**
  * Security ApiKey
  *
- * Checks a static API key an MCP client sends with its request.
- *
- * @author Roan Buysse <roan@tigron.be>
- */
-
-namespace Skeleton\Application\Mcp\Security;
-
-/**
- * Validates the request against the keys of the configuration
+ * Validates the request against the keys of the configuration.
  *
  * A tool opts in with @security \Skeleton\Application\Mcp\Security\ApiKey on the
  * docblock of its execute(). The key is accepted in either header, because not
@@ -22,7 +14,12 @@ namespace Skeleton\Application\Mcp\Security;
  *
  * An empty key list fails closed: a server that was handed no key accepts nobody,
  * which makes a deploy that forgot its configuration unreachable rather than open.
+ *
+ * @author Roan Buysse <roan@tigron.be>
  */
+
+namespace Skeleton\Application\Mcp\Security;
+
 class ApiKey extends \Skeleton\Application\Mcp\Security {
 	/**
 	 * JSON-RPC error code returned when the request is not authorized
@@ -91,7 +88,7 @@ class ApiKey extends \Skeleton\Application\Mcp\Security {
 
 		if (count($api_keys) === 0) {
 			throw new \Skeleton\Application\Mcp\Jsonrpc\Exception(
-				'No MCP API key is configured on this server',
+				$this->get_unconfigured_message(),
 				$this->get_error_code()
 			);
 		}
@@ -105,59 +102,15 @@ class ApiKey extends \Skeleton\Application\Mcp\Security {
 			);
 		}
 
+		$digest = $this->get_digest($api_key);
+
 		foreach ($api_keys as $configured_api_key) {
-			if (hash_equals((string)$configured_api_key, $api_key) === true) {
+			if (hash_equals((string)$configured_api_key, $digest) === true) {
 				return;
 			}
 		}
 
 		throw new \Skeleton\Application\Mcp\Jsonrpc\Exception('Invalid API key', $this->get_error_code());
-	}
-
-	/**
-	 * Get the keys a client may use
-	 *
-	 * Override this to read them somewhere else — a table, when every client has
-	 * its own key and the calls have to be attributed to one.
-	 *
-	 * @access protected
-	 * @return array $api_keys The accepted keys
-	 */
-	protected function get_api_keys(): array {
-		$api_keys = \Skeleton\Core\Config::get()->{static::CONFIG_KEY} ?? [];
-
-		return is_array($api_keys) === true ? $api_keys : [];
-	}
-
-	/**
-	 * Get the key the client provided, if any
-	 *
-	 * @access protected
-	 * @return ?string $api_key
-	 */
-	protected function get_provided_key(): ?string {
-		$authorization = $this->get_header('authorization');
-
-		if ($authorization !== null) {
-			// An Authorization header IS the credential. A second header never
-			// replaces one that is present: a gateway or test harness injecting
-			// X-Api-Key would otherwise silently swap out who is calling — and a
-			// stale X-Api-Key would fail a request whose Bearer token is valid.
-			return $this->get_bearer_token($authorization);
-		}
-
-		// no Authorization at all: fall back to the header some clients can send
-		return $this->get_header('x-api-key');
-	}
-
-	/**
-	 * Get the error code of a refusal
-	 *
-	 * @access protected
-	 * @return int $error_code
-	 */
-	protected function get_error_code(): int {
-		return self::ERROR_CODE_UNAUTHORIZED;
 	}
 
 	/**
@@ -207,7 +160,7 @@ class ApiKey extends \Skeleton\Application\Mcp\Security {
 	 * @return ?string $challenge
 	 */
 	public function get_http_challenge(bool $presented_credential): ?string {
-		$realm = \Skeleton\Core\Config::get()->{static::CONFIG_REALM_KEY} ?? null;
+		$realm = \Skeleton\Core\Config::get()->{self::CONFIG_REALM_KEY} ?? null;
 
 		if (is_string($realm) === false || $realm === '') {
 			$realm = self::REALM_DEFAULT;
@@ -220,6 +173,84 @@ class ApiKey extends \Skeleton\Application\Mcp\Security {
 		}
 
 		return $challenge;
+	}
+
+	/**
+	 * Bring a presented credential into the form it is stored in
+	 *
+	 * The identity by default: `mcp_api_keys` holds the keys themselves, so what the
+	 * client sent is compared as it arrived. A subclass that stores its credentials in
+	 * another form says so here rather than taking over the header reading too — a token
+	 * kept as a sha256 overrides this method and nothing else, which keeps the precedence
+	 * between the two headers, the trimming, and the fail-closed empty list in one
+	 * reviewed place.
+	 *
+	 * @access protected
+	 * @param string $provided The credential as the client sent it
+	 * @return string $digest The value the stored list holds
+	 */
+	protected function get_digest(string $provided): string {
+		return $provided;
+	}
+
+	/**
+	 * What to say when this handler has nothing to compare against
+	 *
+	 * An empty list is a misconfigured server, not a caller's mistake, and the sentence
+	 * should name the thing that is missing in the words the caller would use for it — a
+	 * token handler talks about tokens, a key handler about keys.
+	 *
+	 * @access protected
+	 * @return string $message
+	 */
+	protected function get_unconfigured_message(): string {
+		return 'No MCP API key is configured on this server';
+	}
+
+	/**
+	 * Get the keys a client may use
+	 *
+	 * Override this to read them somewhere else — a table, when every client has
+	 * its own key and the calls have to be attributed to one.
+	 *
+	 * @access protected
+	 * @return array<int, string> $api_keys The accepted keys
+	 */
+	protected function get_api_keys(): array {
+		$api_keys = \Skeleton\Core\Config::get()->{self::CONFIG_KEY} ?? [];
+
+		return is_array($api_keys) === true ? $api_keys : [];
+	}
+
+	/**
+	 * Get the key the client provided, if any
+	 *
+	 * @access protected
+	 * @return ?string $api_key
+	 */
+	protected function get_provided_key(): ?string {
+		$authorization = $this->get_header('authorization');
+
+		if ($authorization !== null) {
+			// An Authorization header IS the credential. A second header never
+			// replaces one that is present: a gateway or test harness injecting
+			// X-Api-Key would otherwise silently swap out who is calling — and a
+			// stale X-Api-Key would fail a request whose Bearer token is valid.
+			return $this->get_bearer_token($authorization);
+		}
+
+		// no Authorization at all: fall back to the header some clients can send
+		return $this->get_header('x-api-key');
+	}
+
+	/**
+	 * Get the error code of a refusal
+	 *
+	 * @access protected
+	 * @return int $error_code
+	 */
+	protected function get_error_code(): int {
+		return self::ERROR_CODE_UNAUTHORIZED;
 	}
 
 	/**
