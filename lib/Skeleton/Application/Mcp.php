@@ -277,23 +277,38 @@ class Mcp extends \Skeleton\Core\Application {
 	/**
 	 * Get a single tool by its advertised name
 	 *
-	 * Every name this server knows is looked up, not only the ones this caller may
-	 * use: a protected tool that answered "unknown tool" would be reporting a missing
-	 * credential as a spelling mistake, and a client would go looking for the bug in
-	 * the wrong place. A name that exists nowhere keeps its -32602.
+	 * Two callers ask this question and they are owed two different truths. A caller
+	 * who OFFERED a credential (any spelling of it, valid or not) is told honestly
+	 * when the name exists but the key is refused: `refuse_caller()` answers the
+	 * forgotten/wrong key as an authentication failure, never as a spelling mistake.
+	 * A caller who offered NOTHING is told nothing about which names exist: a private
+	 * tool answers exactly as a never-written one (the same -32602 this method raises
+	 * below), because a 401-versus-unknown seam would hand a stranger a walkable
+	 * catalogue of the private namespace. The public tools — the ones that declare no
+	 * authenticating handler — answer every caller either way. (2026-10-19: the first
+	 * shape of this law let keyless callers see the 401 for private names; two red
+	 * rounds proved the enumeration door, and the owner ruled it closed — the
+	 * forgotten-key case is served by the offered-credential branch instead.)
 	 *
 	 * @access public
 	 * @param string $name The name the client called
 	 * @return \Skeleton\Application\Mcp\Tool $tool The tool that answers to that name
-	 * @throws \Skeleton\Application\Mcp\Jsonrpc\Exception When no tool of this application carries that name
+	 * @throws \Skeleton\Application\Mcp\Jsonrpc\Exception When no tool of this application carries that name — or when none carries it THAT THIS CALLER MAY SEE
 	 */
 	public function get_tool(string $name): \Skeleton\Application\Mcp\Tool {
+		$presents_credential = $this->get_security_handler(\Skeleton\Application\Mcp\Security\ApiKey::class)->presents_credential();
+
 		foreach ($this->get_all_tools() as $tool) {
 			if ($tool->get_name() !== $name) {
 				continue;
 			}
 
 			if (count($tool->get_security()) > 0 && $this->credential_is_valid() === false) {
+				if ($presents_credential === false) {
+					// nothing was offered: the private name does not exist for this caller
+					break;
+				}
+
 				$this->refuse_caller();
 			}
 

@@ -9,34 +9,24 @@ declare(strict_types=1);
  * place the question is asked that a map can only promise and code can only keep: does
  * what the class returned match what its map declares?
  *
- * Two kinds of definition exist. One that says nothing but the map is answered by the
- * trait's own loop — keys, order and types are then the declaration's own work and
- * there is nothing left to check. The other writes its own `get_mcp_definition_info()`,
- * which is faster to read and easier to get wrong: the same array can miss a field,
- * invent one, or carry a value of a type the schema forbids, and a validating client is
- * the last party to find out. So an authored answer is verified here, against the map,
- * and a mismatch is a bug in the tool: the detail goes to the log with the tool's name
- * and the client gets one neutral sentence. That is the same policy `Handler` already
- * applies to a result that will not project, in the one place both call sites reach.
+ * Two kinds of definition exist — one that writes its own `get_mcp_definition_info()`,
+ * one that lets the trait read its properties — and both hand this class **raw** values.
+ * That is what makes one set of rules possible: keys, types, nullability, `enum`
+ * membership and "an object is a Definition or a source to project" are asked here, of
+ * every answer, whichever shape its author chose. A rule that bound only the newer style
+ * would be a rule waiting for the first class written the older way to break it quietly,
+ * and a validating client is the worst party to find out.
  *
+ * A mismatch is a bug in the tool, not a surprise for the caller: the class, the field and
+ * the value that arrived go to the error log, and the client gets one neutral sentence
+ * naming the tool. Same policy `Handler` applies to a failure nobody planned for, in the
+ * one place both call sites reach. *
  * @author Roan Buysse <roan@tigron.be>
  */
 
 namespace Skeleton\Application\Mcp;
 
 class Reducer {
-	/**
-	 * The file the trait's own loop lives in
-	 *
-	 * Reflection reports it as the declaring file of a method a class inherited from the
-	 * trait, and reports the class's own file when the class wrote the method — which is
-	 * the only way to tell the two kinds of definition apart, since
-	 * `ReflectionMethod::getDeclaringClass()` names the using class either way.
-	 *
-	 * @access private
-	 */
-	private static ?string $trait_file = null;
-
 	/**
 	 * Reduce a declared result into the array the client is answered
 	 *
@@ -48,19 +38,9 @@ class Reducer {
 	 */
 	public static function reduce(DefinitionInterface $result, ?string $tool_name = null): array {
 		try {
-			$info = $result->get_mcp_definition_info();
-
-			if (self::is_authored($result) === false) {
-				// the trait built this from the declaration itself, so the keys cannot
-				// have drifted and the values are already reduced: what is still worth
-				// asking is whether a field the map forbids to be null answered null
-				// anyway, because a property was never assigned
-				self::conform($result, $info);
-
-				return $info;
-			}
-
-			return self::verify($result, $info, $tool_name);
+			// both kinds of definition hand over raw values, so there is one job here and
+			// one set of rules, whoever wrote the answer
+			return self::verify($result, $result->get_mcp_definition_info(), $tool_name);
 		} catch (\Throwable $e) {
 			error_log(
 				'MCP: the result of tool ' . ($tool_name ?? 'a tool') . ' does not reduce: ' . $e->getMessage()
@@ -133,23 +113,6 @@ class Reducer {
 	}
 
 	/**
-	 * Tell whether this class wrote its own payload or let the trait build it
-	 *
-	 * @access private
-	 * @param \Skeleton\Application\Mcp\DefinitionInterface $result The answer to look at
-	 * @return bool $authored Whether get_mcp_definition_info() comes from the class
-	 */
-	private static function is_authored(DefinitionInterface $result): bool {
-		if (self::$trait_file === null) {
-			self::$trait_file = (new \ReflectionClass(Definition::class))->getFileName();
-		}
-
-		$method = new \ReflectionMethod($result, 'get_mcp_definition_info');
-
-		return $method->getFileName() !== self::$trait_file;
-	}
-
-	/**
 	 * Say which keys drifted, in the direction they drifted
 	 *
 	 * @access private
@@ -169,96 +132,6 @@ class Reducer {
 		}
 
 		return implode('; ', $parts);
-	}
-
-	/**
-	 * Hold a payload the trait built to the promises its own map makes
-	 *
-	 * The keys and the shapes here are the declaration's own work — the loop walks the
-	 * map — so the two ways this kind of class can still break its promise are the two
-	 * this checks, and refuses: a field the map says may not be null answering null
-	 * because the property behind it was never assigned, and a field with an `enum`
-	 * answering a value the client was told is impossible.
-	 *
-	 * A scalar of the wrong *type* is different: values read out of a database arrive as
-	 * strings, and a property-driven class that never cast one would start refusing
-	 * calls it has been answering for months. So that case is reported to the log rather
-	 * than thrown — the warning is the work list for the sweep that turns these classes
-	 * into authored ones, where a wrong type is a refusal (see `check()`). The rule is
-	 * the same on both paths from the day no class answers from a property.
-	 *
-	 * @access private
-	 * @param \Skeleton\Application\Mcp\DefinitionInterface $result The answer to check
-	 * @param array<string, mixed> $info The payload the trait built
-	 * @throws \Exception When a field that may not be null is null, or an enum is broken
-	 */
-	private static function conform(DefinitionInterface $result, array $info): void {
-		if (method_exists($result, 'get_mcp_definition_declaration') === false) {
-			return;
-		}
-
-		$keywords = method_exists($result, 'get_mcp_declaration_keywords') === true
-			? $result->get_mcp_declaration_keywords()
-			: [];
-
-		foreach ($result->get_mcp_definition_declaration() as $field => $definition) {
-			$present = array_key_exists($field, $info);
-			$value = $present ? $info[$field] : null;
-
-			if ($value === null) {
-				if (($keywords[$field]['nullable'] ?? $definition['nullable']) !== true) {
-					throw new \Exception(
-						self::name($result) . '::$' . $field . ' is declared not nullable and answered '
-							. ($present === false ? 'nothing at all' : 'null')
-							. ': a property that is never assigned is a field that cannot be published'
-					);
-				}
-
-				continue;
-			}
-
-			if (isset($keywords[$field]['enum']) === true && is_array($keywords[$field]['enum']) === true) {
-				$allowed = array_map('strval', $keywords[$field]['enum']);
-
-				if (in_array((string)$value, $allowed, true) === false) {
-					throw new \Exception(
-						self::name($result) . '::$' . $field . ' answers ' . self::describe($value)
-							. ', which its enum does not name: ' . implode(', ', $allowed)
-					);
-				}
-			}
-
-			if (self::fits($definition, $value) === false) {
-				error_log(
-					'MCP: ' . self::name($result) . '::$' . $field . ' answers ' . self::describe($value)
-						. ' where its map declares ' . $definition['type']
-						. ' — cast it, or author the answer and this becomes a refusal'
-				);
-			}
-		}
-	}
-
-	/**
-	 * Tell whether a reduced value is of the type its field declares
-	 *
-	 * @access private
-	 * @param array $definition What the map says that field is
-	 * @param mixed $value The reduced value
-	 * @return bool $fits Whether the value is of the promised type
-	 */
-	private static function fits(array $definition, $value): bool {
-		if (is_array($value) === true || is_object($value) === true) {
-			// objects and lists are judged by coerce(), which has already had its say
-			return true;
-		}
-
-		return match ($definition['type']) {
-			'string' => is_string($value),
-			'integer' => is_int($value),
-			'number' => is_float($value) === true || is_int($value) === true,
-			'boolean' => is_bool($value),
-			default => true,
-		};
 	}
 
 	/**

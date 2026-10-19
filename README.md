@@ -357,7 +357,8 @@ schema the client is shown and the law the answer is held to:
 An entry that carries a keyword the trait does not read is a refusal naming the class,
 the field and the keyword: a word nothing reads is a sentence said to nobody.
 
-Two ways to answer, and a class picks one:
+Two ways to answer, and a class picks one. Both return **raw** values — a string, an int,
+a bool, a model, a list of nested Definitions:
 
 ```php
 	// 1. authored — one readable array, in the order a human reads the thing
@@ -365,7 +366,7 @@ Two ways to answer, and a class picks one:
 		return [ 'status' => 'ok', 'server_version' => (string)$this->config->server_version ];
 	}
 
-	// 2. property-driven — declare public properties and the trait builds it for you
+	// 2. property-driven — declare public properties and the trait reads them for you
 	protected function get_mcp_definition_value(string $field): mixed {
 		return $this->$field ?? null;   // the default; usually you write nothing at all
 	}
@@ -381,11 +382,11 @@ with the class, the field and the value that arrived written to the error log. A
 that disagrees with its own schema is the bug this exists to make impossible, and a
 client is the worst party to find out.
 
-One asymmetry, stated because it is deliberate: a **scalar of the wrong type** is refused
-in an authored answer and only *logged* in a property-driven one (`cast it, or author the
-answer`). Rows arrive from a database as strings, and a rule that refused them today
-would break tools that have been answering correctly for months. Author the answer, and
-that same value becomes a refusal — which is the direction the log line is asking for.
+Because both shapes hand over raw values, there is one place that turns them into what the
+client receives — `coerce()`, reached from `reduce()` — and one set of rules. A value read
+out of a database as `"12"` for a field the map calls `integer` is refused, not shipped and
+not waved through with a warning: the rule that only binds one of two styles is a rule
+waiting for the first class written the other way to break it quietly.
 
 A field that declares a `value_type` may be handed an instance of that Definition, an
 array, or any object — an object is *projected*, which means only the names the target

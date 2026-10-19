@@ -25,16 +25,13 @@ declare(strict_types=1);
  *   the answer from them, field by field, through `get_mcp_definition_value()`. Fine for
  *   a row that is nothing but assigned columns.
  *
- * Both go through `Reducer::reduce()` exactly once per call, and an authored answer is
- * held to its own map there: a declared field missing from it, a field it invented, a
- * null the map forbids, a value of the wrong type, or a model where a scalar was
- * promised is a refused call and a line in the log naming the class, the field and what
- * arrived. The schema and the payload cannot drift, whichever way the payload was built
- * — and a client that validates is not the party that finds out.
- *
- * The input side works the same way: `Tool::get_input_schema()` reads the parameters of
- * execute() rather than asking the author to describe them again. One declaration per
- * direction, and no second place a field can be stated in.
+ * Both hand raw values to `Reducer::reduce()`, which runs exactly once per call and holds
+ * the answer to its own map: a declared field missing from it, a field it invented, a null
+ * the map forbids, a value of the wrong type, an `enum` value the map does not name, or a
+ * model where a scalar was promised is a **refused call**, with the class, the field and
+ * what arrived written to the error log. One law for both shapes: a rule that only bound
+ * the newer of two styles would be a rule waiting for the first class written the other way
+ * to break it quietly, and a client that validates is the worst party to find out.
  *
  * **The declaration also decides what is read, not only what is named.** A field whose
  * type is another Definition accepts an instance of it, an array, or any object — and
@@ -140,13 +137,16 @@ trait Definition {
 	}
 
 	/**
-	 * Get the structuredContent of this result
+	 * Get the answer of this result, as the code holds it
 	 *
-	 * The entry point `Handler` and `Reducer` call. A class that builds its answer from
-	 * declared properties never sees this method — the trait answers for it below. A
-	 * class that would rather write its payload in one readable array overrides *this*
-	 * method and leaves `build_mcp_definition_info()` alone: that is how the trait can
-	 * still project a source onto it, and how `Reducer` tells the two kinds apart.
+	 * The entry point `Reducer::reduce()` calls. A class that holds its fields in
+	 * properties never sees this method — the trait answers it from the declaration below;
+	 * a class that writes its payload in one readable array overrides *this* one and
+	 * leaves `build_mcp_definition_info()` alone.
+	 *
+	 * Either way the values are **raw**: a model, a nested Definition, a list of either.
+	 * Turning them into what the client receives is `Reducer`'s job and `coerce()`'s, in
+	 * one place, so the answer cannot mean one thing to the log and another to the wire.
 	 *
 	 * @access public
 	 * @return array<string, mixed> $info The answer to hand to the client
@@ -156,29 +156,26 @@ trait Definition {
 	}
 
 	/**
-	 * Build the structuredContent from the declaration, field by field
+	 * Build the raw answer from the declaration, field by field
 	 *
-	 * Every declared field is answered, null when neither a value method nor a property
-	 * supplies one: a missing key would contradict the required list of the schema, while
-	 * a null says what the schema promises anyway. The answer is memoised because the
-	 * handler and the logging around a call ask the same question of the same object, and
-	 * reducing twice would walk every nested result twice.
+	 * Every declared field is answered with what the class holds for it, null when
+	 * neither a value method nor a property supplies one. The values are **raw** here, as
+	 * they are in an authored answer: what a model, a nested Definition or a list of
+	 * either looks like on the way to the client is one rule, and it lives in
+	 * `Reducer::reduce()`. A class is not asked to shape its own output twice depending on
+	 * which of the two shapes it chose to write.
 	 *
 	 * @access public
-	 * @return array<string, mixed> $info The answer to hand to the client
+	 * @return array<string, mixed> $info The answer as the code holds it
 	 */
 	public function build_mcp_definition_info(): array {
-		if ($this->info !== null) {
-			return $this->info;
-		}
-
 		$info = [];
 
-		foreach ($this->get_mcp_definition_declaration() as $name => $definition) {
-			$info[$name] = $this->value_for_property($definition, $this->get_mcp_definition_value($name), $name);
+		foreach (array_keys($this->get_mcp_definition_declaration()) as $name) {
+			$info[$name] = $this->get_mcp_definition_value($name);
 		}
 
-		return $this->info = $info;
+		return $info;
 	}
 
 	/**
@@ -303,24 +300,6 @@ trait Definition {
 	 */
 	protected function get_mcp_definition_value(string $field): mixed {
 		return $this->$field ?? null;
-	}
-
-	/**
-	 * Turn one property value into what the client receives
-	 *
-	 * @access protected
-	 * @param array $definition What the property is
-	 * @param mixed $value The value the result carries
-	 * @param string $field The name of the property, for a refusal
-	 * @return mixed $value The same value, reduced to what the schema declares
-	 * @throws \Exception When a value cannot be expressed as the declared type
-	 */
-	protected function value_for_property(array $definition, $value, string $field): mixed {
-		if ($value === null) {
-			return null;
-		}
-
-		return $this->coerce($value, $definition, $field);
 	}
 
 	/**
